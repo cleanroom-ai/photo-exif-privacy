@@ -10,7 +10,7 @@ const base = process.argv[2] || "http://127.0.0.1:8090/";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const shotsDir = join(root, ".cache", "e2e");
 mkdirSync(shotsDir, { recursive:true });
-const { page, shot, assertLogo, finish, elapsed, problems, external } = await openApp(base, { shotsDir });
+const { page, shot, assertLogo, finish, elapsed, problems } = await openApp(base, { shotsDir });
 
 await page.locator("#engine[data-kind=ok]").waitFor({ timeout:180_000 });
 await assertLogo();
@@ -55,7 +55,6 @@ assert.equal(entries.length, 3);
 for (const e of entries) assert.equal(parseMetadata(e.data).risks.some(r => ["gps", "device", "serial", "thumbnail", "xmp"].includes(r.kind)), false, e.name);
 await zipDownload.delete();
 await shot("zip-batch");
-for (let i = external.length - 1; i >= 0; i--) if (/^edge:\/\//.test(external[i])) external.splice(i, 1);
 if (problems.length) console.log("console problems:\n" + problems.join("\n"));
 await finish();
 process.exit(0);
