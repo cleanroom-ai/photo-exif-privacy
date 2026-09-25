@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' blob: data:; img-src 'self' blob: data:; style-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Photo Share-Safe — strip photo metadata before you post</title>
+  <meta name="description" content="Strip GPS and hidden metadata, blur faces and plates before you post. Runs entirely in your browser.">
+  <link rel="icon" href="favicon.ico" sizes="48x48">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <link rel="manifest" href="assets/site.webmanifest">
+  <link rel="stylesheet" href="vendor/core/theme.css">
+  <link rel="stylesheet" href="style.css">
+  <meta name="theme-color" content="#1e1b4b">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Photo Share-Safe">
+  <meta property="og:description" content="Strip GPS & hidden metadata, blur faces and plates — before you post.">
+  <meta property="og:url" content="https://huggingface.co/spaces/cleanroom-ai/photo-exif-privacy">
+  <meta property="og:image" content="https://cleanroom-ai-photo-exif-privacy.static.hf.space/assets/social-preview.png">
+  <meta property="og:image:width" content="1280"><meta property="og:image:height" content="640">
+  <meta name="twitter:card" content="summary_large_image">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><img class="logo" src="assets/icon.svg" width="44" height="44" alt=""><div><h1>Photo Share-Safe</h1><p class="tag">Strip GPS & hidden metadata, blur faces and plates — before you post. <a class="family" href="https://github.com/paragpsawant" target="_blank" rel="noopener noreferrer">cleanroom-ai</a></p></div></div>
+    <p class="privacy">🔒 Runs 100% in your browser. Your photos are never uploaded.</p>
+  </header>
+  <main>
+    <section id="drop" class="drop" tabindex="0" role="button" aria-label="Choose, drop or paste photos">
+      <input id="file" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" multiple hidden>
+      <div class="drop-inner"><div class="drop-icon" aria-hidden="true">⬆</div><p class="drop-title">Drop many photos, paste, or click to choose</p><p class="drop-sub">JPEG, PNG, WebP, and HEIC if your browser can decode it. Everything stays on this device.</p><div class="examples"><span>Try an example (fake data):</span><button type="button" data-example="examples/exif-street.jpg" data-name="exif-street.jpg">EXIF street photo</button><button type="button" data-example="examples/png-note.png" data-name="png-note.png">PNG metadata</button><button type="button" data-example="examples/clean-control.webp" data-name="clean-control.webp">Clean WebP</button></div></div>
+    </section>
+    <section id="workspace" class="workspace" hidden>
+      <aside class="side left"><div class="card"><h2>Photos</h2><div id="photos" class="photos"></div><button id="reset" type="button" class="wide ghost">← New batch</button></div><div class="card"><h2>Privacy report</h2><ul id="report" class="report"></ul><ul id="safe" class="safe"></ul><div id="thumb" class="thumb"></div></div></aside>
+      <section class="viewer"><p id="status" class="status" role="status" aria-live="polite"></p><canvas id="clean" aria-label="Clean photo preview"></canvas><details open><summary>Review numbered visual boxes</summary><p class="hint">Untick false positives. Drag on the preview below to add a box manually.</p><canvas id="review" class="drawable" aria-label="Review overlay"></canvas></details></section>
+      <aside class="side"><div class="card"><div class="card-head"><h2>Visual scan</h2><span class="mini"><button id="select-all" type="button">all</button> · <button id="select-none" type="button">none</button></span></div><label class="check"><input id="visual" type="checkbox" checked> OCR for plates, house numbers, signs</label><label class="check"><input id="faces" type="checkbox" checked> Face detector</label><ul id="detections" class="detections"></ul><p id="detections-empty" class="muted">No visual boxes.</p></div><div class="card"><h2>Redaction style</h2><div class="styles"><label><input type="radio" name="style" value="blur" checked> Blur</label><label><input type="radio" name="style" value="pixelate"> Pixelate</label><label><input type="radio" name="style" value="black box"> Black box</label></div><p id="style-note" class="note" hidden>⚠️ Blur and pixelation can sometimes be reversed for text. Use black boxes for secrets.</p><label class="check"><input id="lossless" type="checkbox" checked> Keep original pixels (lossless JPEG metadata strip when no boxes are selected)</label></div><div class="card actions"><button id="download" type="button" class="primary wide">Download clean copy</button><button id="zip" type="button" class="wide">Download all (ZIP)</button><p id="verify" class="verify"></p></div></aside>
+    </section>
+  </main>
+  <footer><p id="engine" class="engine">Starting engine…</p><p class="muted">Built by <a href="https://github.com/paragpsawant" target="_blank" rel="noopener noreferrer">Parag Sawant</a> · <a href="https://github.com/paragpsawant/photo-exif-privacy" target="_blank" rel="noopener noreferrer">Source on GitHub</a> · part of cleanroom-ai · Apache-2.0</p></footer>
+</body></html>

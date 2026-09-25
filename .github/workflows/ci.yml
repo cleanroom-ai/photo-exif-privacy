@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+
+jobs:
+  unit:
+    name: Unit tests (parsers, ZIP, heuristics, OCR)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run vendor
+      - run: npm test
+
+  browser:
+    name: Real-browser E2E (no uploads, no third-party requests)
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run vendor
+      - run: npx playwright-core install --with-deps chromium
+      - name: Serve and run E2E
+        env:
+          E2E_BROWSER: chromium
+          PORT: "8090"
+        run: |
+          node node_modules/@cleanroom-ai/core/scripts/serve.mjs . &
+          for i in $(seq 1 45); do curl -sf http://127.0.0.1:8090/ >/dev/null && break; sleep 1; done
+          node tests/e2e.browser.mjs http://127.0.0.1:8090/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-screenshots
+          path: .cache/e2e/
+          if-no-files-found: ignore

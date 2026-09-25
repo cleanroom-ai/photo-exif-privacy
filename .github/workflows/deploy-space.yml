@@ -1,0 +1,54 @@
+name: Deploy to Hugging Face Space
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for the HF_TOKEN secret
+        id: token
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then echo "::notice::HF_TOKEN secret not set; skipping deploy."; echo "ok=false" >> "$GITHUB_OUTPUT"; else echo "ok=true" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-node@v4
+        if: steps.token.outputs.ok == 'true'
+        with:
+          node-version: 24
+          cache: npm
+      - name: Build (vendor runtime libraries)
+        if: steps.token.outputs.ok == 'true'
+        run: |
+          npm ci
+          npm run vendor
+      - uses: actions/setup-python@v5
+        if: steps.token.outputs.ok == 'true'
+        with:
+          python-version: "3.12"
+      - name: Upload to cleanroom-ai/photo-exif-privacy
+        if: steps.token.outputs.ok == 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          pip install "huggingface_hub>=1.0"
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          HfApi().upload_folder(
+              folder_path=".", repo_id="cleanroom-ai/photo-exif-privacy", repo_type="space",
+              ignore_patterns=["node_modules/**", ".cache/**", "tests/**", "scripts/**", ".github/**",
+                               "package.json", "package-lock.json", "_*.mjs"],
+              commit_message=f"Deploy from GitHub {os.environ['SHA'][:7]}")
+          PY

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Photo Share-Safe icon">
+  <defs><linearGradient id="tile" x1="62" y1="38" x2="442" y2="472" gradientUnits="userSpaceOnUse"><stop stop-color="#312e81"/><stop offset="1" stop-color="#0f172a"/></linearGradient><linearGradient id="accent" x1="144" y1="124" x2="400" y2="392" gradientUnits="userSpaceOnUse"><stop stop-color="#a5b4fc"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
+  <rect x="16" y="16" width="480" height="480" rx="116" fill="url(#tile)"/>
+  <rect x="92" y="128" width="328" height="244" rx="34" fill="#f8fafc" opacity=".96"/>
+  <rect x="116" y="152" width="280" height="158" rx="20" fill="#dbeafe"/>
+  <circle cx="338" cy="194" r="28" fill="#facc15"/>
+  <path d="M116 310 205 222l54 58 38-36 99 66v38H116z" fill="url(#accent)"/>
+  <path d="M291 202c0-49 40-88 89-88s89 39 89 88c0 60-89 158-89 158s-89-98-89-158Z" fill="#ef4444" stroke="#fff" stroke-width="18"/>
+  <circle cx="380" cy="202" r="31" fill="#fee2e2"/>
+  <path d="M294 352 446 118" stroke="#fff" stroke-width="34" stroke-linecap="round"/><path d="M294 352 446 118" stroke="#0f172a" stroke-width="18" stroke-linecap="round" opacity=".7"/>
+</svg>

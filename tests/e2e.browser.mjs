@@ -1,0 +1,61 @@
+import assert from "node:assert/strict";
+import { mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { openApp } from "@cleanroom-ai/core/testing/browser.mjs";
+import { parseMetadata } from "../js/metadata.js";
+import { readStoreZip } from "../js/zip.js";
+
+const base = process.argv[2] || "http://127.0.0.1:8090/";
+const root = fileURLToPath(new URL("..", import.meta.url));
+const shotsDir = join(root, ".cache", "e2e");
+mkdirSync(shotsDir, { recursive:true });
+const { page, shot, assertLogo, finish, elapsed, problems, external } = await openApp(base, { shotsDir });
+
+await page.locator("#engine[data-kind=ok]").waitFor({ timeout:180_000 });
+await assertLogo();
+console.log(`engine ready in ${elapsed()}s`);
+
+await page.getByRole("button", { name:/EXIF street photo/ }).click();
+await page.locator("#status[data-kind=ok], #status[data-kind=warn]").waitFor({ timeout:120_000 });
+const report = await page.locator("#report").innerText();
+console.log("report lines: " + report.split("\n").slice(0,8).join(" | "));
+assert.match(report, /GPS location/);
+assert.match(report, /Camera\/lens serial number/);
+assert.match(report, /Embedded thumbnail/);
+assert.ok(await page.locator("#thumb img").evaluate(img => img.complete && img.naturalWidth > 0));
+const detections = await page.locator("#detections li .name").allInnerTexts();
+console.log("visual boxes: " + detections.join(" | "));
+assert.ok(detections.some(t => /Possible Plate/.test(t)), "plate box shown");
+assert.ok(detections.some(t => /House Number/.test(t)), "house number box shown");
+await shot("exif-report");
+
+const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });
+await page.locator("#download").evaluate((b) => b.click());
+const download = await downloadPromise;
+const clean = new Uint8Array(readFileSync(await download.path()));
+const meta = parseMetadata(clean);
+console.log(`download: ${download.suggestedFilename()} ${clean.length} bytes`);
+assert.ok(clean[0] === 0xff && clean[1] === 0xd8 || clean[0] === 137 || clean.subarray(0,4).toString?.() === "RIFF");
+assert.equal(meta.risks.some(r => ["gps", "device", "serial", "thumbnail", "xmp"].includes(r.kind)), false, JSON.stringify(meta.risks));
+await page.locator("#verify[data-kind=ok]").waitFor({ timeout:5000 });
+console.log(await page.locator("#verify").innerText());
+await download.delete();
+
+await page.locator("#reset").click();
+await page.locator("#file").setInputFiles([join(root, "examples", "exif-street.jpg"), join(root, "examples", "png-note.png"), join(root, "examples", "clean-control.webp")]);
+await page.locator("#photos button").nth(2).waitFor({ timeout:120_000 });
+const zipPromise = page.waitForEvent("download", { timeout: 60_000 });
+await page.locator("#zip").evaluate((b) => b.click());
+const zipDownload = await zipPromise;
+const zipBytes = new Uint8Array(readFileSync(await zipDownload.path()));
+const entries = readStoreZip(zipBytes);
+console.log(`zip: ${zipDownload.suggestedFilename()} entries=${entries.map(e=>e.name).join(",")}`);
+assert.equal(entries.length, 3);
+for (const e of entries) assert.equal(parseMetadata(e.data).risks.some(r => ["gps", "device", "serial", "thumbnail", "xmp"].includes(r.kind)), false, e.name);
+await zipDownload.delete();
+await shot("zip-batch");
+for (let i = external.length - 1; i >= 0; i--) if (/^edge:\/\//.test(external[i])) external.splice(i, 1);
+if (problems.length) console.log("console problems:\n" + problems.join("\n"));
+await finish();
+process.exit(0);
