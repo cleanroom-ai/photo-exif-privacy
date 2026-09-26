@@ -1,0 +1,43 @@
+name: Live check
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Space URL to test (defaults to the published Space)"
+        required: false
+  workflow_run:
+    workflows: ["Deploy to Hugging Face Space"]
+    types: [completed]
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+
+jobs:
+  live:
+    name: Real-browser test against the live Space
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright-core install --with-deps chromium
+      - name: Run the browser test against the live Space
+        env:
+          E2E_BROWSER: chromium
+          URL: ${{ inputs.url || vars.SPACE_URL || 'https://screenshot-redactor-photo-exif-privacy.static.hf.space/' }}
+        run: node tests/e2e.browser.mjs "$URL"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-screenshots
+          path: .cache/e2e/
+          if-no-files-found: ignore
