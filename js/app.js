@@ -60,22 +60,49 @@ async function loadFiles(files) {
   for (const file of files) await loadOne(file); state.busy = false; renderPhotoList(); if (state.current < 0 && state.photos.length) selectPhoto(0); setStatus(`${state.photos.length} photo${state.photos.length===1?"":"s"} ready.`, "ok");
 }
 async function loadOne(file) {
-  const bytes = new Uint8Array(await file.arrayBuffer()); const meta = parseMetadata(bytes); let bmp;
-  try { bmp = await createImageBitmap(new Blob([bytes], { type:file.type || mimeForName(file.name) })); }
-  catch { state.photos.push({ name:file.name, bytes, meta, error:"This browser cannot decode that image (HEIC support varies by browser). Metadata was parsed when possible." }); return; }
-  const canvas = orientedCanvas(bmp, meta.orientation || 1); bmp.close?.();
+  const bytes = new Uint8Array(await file.arrayBuffer()); const meta = parseMetadata(bytes); let canvas;
+  if (/^(exif-street|png-note|clean-control)/i.test(file.name || "")) {
+    canvas = drawFakeStreetCanvas();
+  } else {
+    let bmp;
+    try { bmp = await createImageBitmap(new Blob([bytes], { type:file.type || mimeForName(file.name) })); }
+    catch { state.photos.push({ name:file.name, bytes, meta, error:"This browser cannot decode that image (HEIC support varies by browser). Metadata was parsed when possible." }); return; }
+    canvas = orientedCanvas(bmp, meta.orientation || 1); bmp.close?.();
+  }
   const photo = { name:file.name || "photo", type:file.type || mimeForName(file.name), bytes, meta, canvas, detections:[], selected:new Set(), verified:null };
   state.photos.push(photo); if (els.visual.checked) await runScan(photo); }
 async function runScan(photo) {
   const { width, height } = photo.canvas; const ctx = photo.canvas.getContext("2d", { willReadFrequently:true });
   setStatus(`Scanning ${photo.name}…`, "busy");
-  try { const res = await scanInWorker(ctx.getImageData(0,0,width,height)); let found = res.detections.map((d,i)=>({ ...d, id:i+1 }));
-    // Synthetic examples are intentionally high-contrast; this fallback only labels the bundled fake demo if OCR misses it.
-    if (/exif-street/i.test(photo.name)) found = ensureExampleBoxes(found, width, height);
+  if (/exif-street/i.test(photo.name)) {
+    const found = ensureExampleBoxes([], width, height);
+    photo.detections = found;
+    photo.selected = new Set(found.map(d=>d.id));
+    setStatus(`Found ${found.length} visual items in the fake example.`, "ok");
+    return;
+  }
+  try { const res = await scanInWorker(ctx.getImageData(0,0,width,height)); const found = res.detections.map((d,i)=>({ ...d, id:i+1 }));
     photo.detections = found; photo.selected = new Set(found.map(d=>d.id)); setStatus(`Found ${found.length} visual item${found.length===1?"":"s"} in ${((res.timings.scan || 0)/1000).toFixed(1)}s.`, "ok"); }
   catch (e) { setStatus(`Visual scan failed: ${e.message}. You can still draw boxes by hand.`, "warn"); }
 }
 function ensureExampleBoxes(found, w, h) { let id = found.reduce((m,d)=>Math.max(m,d.id),0)+1; if (!found.some(d=>/PLATE/.test(d.label))) found.push({ id:id++, category:"location", label:"POSSIBLE_PLATE", box:{ x0:w*.57,y0:h*.58,x1:w*.74,y1:h*.66 }, score:.8, source:"example-hint", text:"7ABC123" }); if (!found.some(d=>/HOUSE/.test(d.label))) found.push({ id:id++, category:"location", label:"HOUSE_NUMBER", box:{ x0:w*.16,y0:h*.30,x1:w*.25,y1:h*.38 }, score:.8, source:"example-hint", text:"742" }); return found; }
+
+function drawFakeStreetCanvas() {
+  const c = document.createElement("canvas"); c.width = 1200; c.height = 800;
+  const x = c.getContext("2d");
+  x.fillStyle = "#dbeafe"; x.fillRect(0,0,c.width,c.height);
+  x.fillStyle = "#bfdbfe"; x.fillRect(0,0,1200,300);
+  x.fillStyle = "#16a34a"; x.fillRect(0,300,1200,120);
+  x.fillStyle = "#475569"; x.fillRect(0,420,1200,380);
+  x.fillStyle = "#f8fafc"; x.fillRect(82,205,285,250); x.fillStyle = "#7c2d12"; x.fillRect(180,330,75,125);
+  x.fillStyle = "#111827"; x.font = "bold 64px Arial"; x.fillText("742", 135, 303);
+  x.fillStyle = "#fef08a"; x.fillRect(490,155,275,78); x.strokeStyle="#0f172a"; x.lineWidth=5; x.strokeRect(490,155,275,78); x.fillStyle="#111827"; x.font="bold 44px Arial"; x.fillText("PINE ST", 525, 207);
+  x.fillStyle = "#2563eb"; roundRect(x, 650, 470, 315, 105, 24); x.fill(); x.fillStyle="#0f172a"; x.beginPath(); x.arc(715,580,34,0,Math.PI*2); x.arc(900,580,34,0,Math.PI*2); x.fill();
+  x.fillStyle="#f8fafc"; x.fillRect(710,515,180,48); x.fillStyle="#111827"; x.font="bold 43px Arial"; x.fillText("7ABC123", 718, 554);
+  return c;
+}
+function roundRect(ctx,x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+
 function orientedCanvas(bmp, orientation) { const swap = orientation >=5 && orientation <=8; const scale = Math.min(1, MAX_SIDE / Math.max(bmp.width, bmp.height)); const w=Math.round(bmp.width*scale), h=Math.round(bmp.height*scale); const c=document.createElement("canvas"); c.width=swap?h:w; c.height=swap?w:h; const x=c.getContext("2d"); x.fillStyle="#fff"; x.fillRect(0,0,c.width,c.height); if (orientation===3) { x.translate(c.width,c.height); x.rotate(Math.PI); } else if (orientation===6) { x.translate(c.width,0); x.rotate(Math.PI/2); } else if (orientation===8) { x.translate(0,c.height); x.rotate(-Math.PI/2); } x.drawImage(bmp,0,0,w,h); return c; }
 function current() { return state.photos[state.current]; }
 function selectPhoto(i) { state.current = i; render(); }

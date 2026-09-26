@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { chromium } from "playwright-core";
@@ -8,7 +9,9 @@ const outDir = join(appDir, "examples");
 mkdirSync(outDir, { recursive: true });
 const channel = process.env.E2E_BROWSER || "msedge";
 const browser = await chromium.launch(channel === "chromium" ? {} : { channel });
-const page = await browser.newPage();
+let page;
+try {
+page = await browser.newPage();
 async function canvasBytes(type, quality, drawKind = "street") {
   return await page.evaluate(async ({ type, quality, drawKind }) => {
     const c = document.createElement("canvas"); c.width = 1200; c.height = 800;
@@ -40,8 +43,31 @@ const textChunk = makePngChunk("tEXt", new TextEncoder().encode("Author\0Jane Do
 const commentChunk = makePngChunk("iTXt", new TextEncoder().encode("Comment\0\0\0en\0Comment\0Fake PNG comment with private note"));
 writeFileSync(join(outDir, "png-note.png"), injectPngChunks(png, [textChunk, commentChunk, makePngChunk("eXIf", pngTiff)]));
 writeFileSync(join(outDir, "clean-control.webp"), new Uint8Array(await canvasBytes("image/webp", 0.92, "street")));
-await Promise.race([browser.close(), new Promise((r) => setTimeout(r, 3000))]);
 console.log(`wrote examples to ${outDir}`);
+} finally {
+  const proc = browser.process?.();
+  const profile = browserProfileDir(browser);
+  let closed = false;
+  await Promise.race([
+    browser.close().then(() => { closed = true; }).catch(() => {}),
+    new Promise((r) => setTimeout(r, 15_000)),
+  ]);
+  if (!closed && proc?.pid) {
+    try { process.kill(proc.pid, "SIGKILL"); } catch {}
+  }
+  stopProfileProcesses(profile);
+}
+function browserProfileDir(browser) {
+  const args = browser?.process?.()?.spawnargs || [];
+  const arg = args.find((a) => a.startsWith("--user-data-dir"));
+  return arg?.includes("=") ? arg.slice(arg.indexOf("=") + 1).replace(/^"|"$/g, "") : null;
+}
+function stopProfileProcesses(profile) {
+  if (!profile || process.platform !== "win32") return;
+  const needle = profile.replaceAll("'", "''");
+  const command = `$needle='${needle}'; Get-CimInstance Win32_Process -Filter "name='msedge.exe'" | Where-Object { $_.CommandLine -like "*$needle*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`;
+  try { execFileSync("powershell.exe", ["-NoProfile", "-Command", command], { stdio: "ignore" }); } catch {}
+}
 process.exit(0);
 
 

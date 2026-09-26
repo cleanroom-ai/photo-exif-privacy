@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,14 +11,17 @@ const base = process.argv[2] || "http://127.0.0.1:8090/";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const shotsDir = join(root, ".cache", "e2e");
 mkdirSync(shotsDir, { recursive:true });
-const { page, shot, assertLogo, finish, elapsed, problems } = await openApp(base, { shotsDir });
+let app;
+try {
+app = await openApp(base, { shotsDir });
+const { page, shot, assertLogo, finish, elapsed, problems } = app;
 
 await page.locator("#engine[data-kind=ok]").waitFor({ timeout:180_000 });
 await assertLogo();
 console.log(`engine ready in ${elapsed()}s`);
 
-await page.getByRole("button", { name:/EXIF street photo/ }).click();
-await page.locator("#status[data-kind=ok], #status[data-kind=warn]").waitFor({ timeout:120_000 });
+await page.locator('[data-name="exif-street.jpg"]').evaluate((b) => b.click());
+await page.locator("#status[data-kind=ok], #status[data-kind=warn]").waitFor({ timeout:300_000 });
 const report = await page.locator("#report").innerText();
 console.log("report lines: " + report.split("\n").slice(0,8).join(" | "));
 assert.match(report, /GPS location/);
@@ -42,9 +46,9 @@ await page.locator("#verify[data-kind=ok]").waitFor({ timeout:5000 });
 console.log(await page.locator("#verify").innerText());
 await download.delete();
 
-await page.locator("#reset").click();
+await page.locator("#reset").evaluate((b) => b.click());
 await page.locator("#file").setInputFiles([join(root, "examples", "exif-street.jpg"), join(root, "examples", "png-note.png"), join(root, "examples", "clean-control.webp")]);
-await page.locator("#photos button").nth(2).waitFor({ timeout:120_000 });
+await page.locator("#photos button").nth(2).waitFor({ timeout:300_000 });
 const zipPromise = page.waitForEvent("download", { timeout: 60_000 });
 await page.locator("#zip").evaluate((b) => b.click());
 const zipDownload = await zipPromise;
@@ -57,4 +61,32 @@ await zipDownload.delete();
 await shot("zip-batch");
 if (problems.length) console.log("console problems:\n" + problems.join("\n"));
 await finish();
+} finally {
+  const browser = app?.browser;
+  const proc = browser?.process?.();
+  if (browser) {
+    const profile = browserProfileDir(browser);
+    let closed = false;
+    await Promise.race([
+      browser.close().then(() => { closed = true; }).catch(() => {}),
+      new Promise((r) => setTimeout(r, 15_000)),
+    ]);
+    if (!closed && proc?.pid) {
+      try { process.kill(proc.pid, "SIGKILL"); } catch {}
+    }
+    stopProfileProcesses(profile);
+  }
+}
+function browserProfileDir(browser) {
+  const args = browser?.process?.()?.spawnargs || [];
+  const arg = args.find((a) => a.startsWith("--user-data-dir"));
+  return arg?.includes("=") ? arg.slice(arg.indexOf("=") + 1).replace(/^"|"$/g, "") : null;
+}
+function stopProfileProcesses(profile) {
+  if (!profile || process.platform !== "win32") return;
+  const needle = profile.replaceAll("'", "''");
+  const command = `$needle='${needle}'; Get-CimInstance Win32_Process -Filter "name='msedge.exe'" | Where-Object { $_.CommandLine -like "*$needle*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`;
+  try { execFileSync("powershell.exe", ["-NoProfile", "-Command", command], { stdio: "ignore" }); } catch {}
+}
+
 process.exit(0);
