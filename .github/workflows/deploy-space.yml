@@ -15,14 +15,14 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check for the HF_TOKEN secret
         id: token
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           if [ -z "$HF_TOKEN" ]; then echo "::notice::HF_TOKEN secret not set; skipping deploy."; echo "ok=false" >> "$GITHUB_OUTPUT"; else echo "ok=true" >> "$GITHUB_OUTPUT"; fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: steps.token.outputs.ok == 'true'
         with:
           node-version: 24
@@ -32,7 +32,7 @@ jobs:
         run: |
           npm ci
           npm run vendor
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: steps.token.outputs.ok == 'true'
         with:
           python-version: "3.12"
