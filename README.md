@@ -45,13 +45,13 @@ Real photos often carry precise GPS coordinates that can reveal a home, school, 
 
 ## Features
 
-- Parses JPEG EXIF/XMP/IPTC/ICC/thumbnail data, PNG text/eXIf chunks, and WebP EXIF/XMP metadata locally.
+- Parses JPEG EXIF/XMP (including Extended XMP)/IPTC/ICC/APP/thumbnail data, PNG text/eXIf/trailing chunks, and WebP EXIF/XMP metadata locally.
 - Ranks GPS, serial numbers, owner/copyright, capture time, comments, thumbnails, and XMP edit history.
 - Uses bundled cleanroom-ai OCR + YuNet face detection in a Web Worker.
 - Flags short plate-like OCR text and standalone digit strings such as house numbers.
 - Lets you untick or manually draw boxes, then blur, pixelate, or black-box them.
 - Exports a clean copy or STORE-only ZIP; re-parses output to verify GPS/camera/thumbnail data is gone.
-- Optional JPEG lossless metadata strip keeps original pixels when no visual redactions are selected.
+- Optional JPEG lossless metadata strip keeps original pixels when no visual redactions are selected, using a strict rendering-marker allow-list.
 
 ## How it works
 

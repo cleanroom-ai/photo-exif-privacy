@@ -3,6 +3,8 @@ import { crc32 } from "./zip.js";
 const dec = new TextDecoder("latin1");
 const utf8 = new TextDecoder();
 const enc = new TextEncoder();
+const XMP_NS = "http://ns.adobe.com/xap/1.0/\0";
+const EXTENDED_XMP_NS = "http://ns.adobe.com/xmp/extension/\0";
 
 export function parseMetadata(input, options = {}) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
@@ -31,29 +33,116 @@ export function parseJpeg(bytes, options = {}) {
     if (bytes[p] !== 0xff) { p++; continue; }
     while (bytes[p] === 0xff) p++;
     const marker = bytes[p++];
-    if (marker === 0xd9 || marker === 0xda) break;
+    if (marker === 0xd9) break;
+    if (marker === 0xda) {
+      const len = be16(bytes, p); const scanStart = p + len;
+      const eoiEnd = findJpegEoi(bytes, scanStart);
+      if (eoiEnd >= 0 && eoiEnd < bytes.length) {
+        out.trailingBytes = bytes.length - eoiEnd;
+        addRisk(out, "red", "trailing", "Trailing data after JPEG EOI", `${out.trailingBytes} bytes`, "Motion Photo or appended private data can contain hidden photos, GPS or serials.");
+      } else if (eoiEnd < 0) {
+        out.warnings.push("JPEG scan has no EOI marker.");
+      }
+      break;
+    }
     if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
     const len = be16(bytes, p); const start = p + 2; const end = start + len - 2;
     if (len < 2 || end > bytes.length) break;
     const seg = bytes.subarray(start, end);
     out.segments.push({ marker, length: len });
-    if (marker === 0xe1 && ascii(seg, 0, 6) === "Exif\0\0") {
-      const t = parseTiff(seg.subarray(6));
-      mergeTiff(out, t); out.exif = t;
-    } else if (marker === 0xe1 && ascii(seg, 0, 29) === "http://ns.adobe.com/xap/1.0/\0") {
-      const xmp = text(seg.subarray(29)); out.xmp = xmp;
-      addRisk(out, "red", "xmp", "XMP edit history", summarizeXml(xmp), "XMP can include edit history, tool names, document IDs and names.");
-    } else if (marker === 0xed) {
-      const iptc = parseIptc(seg); out.iptc = iptc;
-      for (const item of iptc) addRisk(out, "red", "iptc", item.label, item.value, "IPTC caption/byline/copyright metadata can identify you.");
-    } else if (marker === 0xe2 && ascii(seg, 0, 12).startsWith("ICC_PROFILE")) {
-      out.hasIcc = true; addSafe(out, "Color profile", "ICC profile kept");
-    } else if (marker === 0xfe) {
-      addRisk(out, "red", "comment", "JPEG comment", cleanAscii(ascii(seg, 0, seg.length)), "Comments can reveal names, places or workflow notes.");
-    }
+    classifyJpegSegment(out, marker, seg);
     p = end;
   }
   return rank(out);
+}
+
+function classifyJpegSegment(out, marker, seg) {
+    if (marker === 0xe0) {
+      const jfif = parseJfif(seg);
+      if (jfif) {
+        if (jfif.thumbnailBytes) addRisk(out, "red", "thumbnail", "JFIF thumbnail", `${jfif.xThumb}×${jfif.yThumb} thumbnail in APP0`, "APP0 thumbnails can reveal the original uncropped image.");
+        else addSafe(out, "JFIF", "APP0 without thumbnail");
+      } else addRisk(out, "red", "app", "JPEG APP0 metadata", `${seg.length} bytes`, "Unknown APP segments may contain private metadata.");
+    } else if (marker === 0xe1 && ascii(seg, 0, 6) === "Exif\0\0") {
+      const t = parseTiff(seg.subarray(6));
+      mergeTiff(out, t); out.exif = t;
+    } else if (marker === 0xe1 && ascii(seg, 0, XMP_NS.length) === XMP_NS) {
+      const xmp = text(seg.subarray(XMP_NS.length)); out.xmp = xmp;
+      addRisk(out, "red", "xmp", "XMP edit history", summarizeXml(xmp), "XMP can include edit history, tool names, document IDs and names.");
+    } else if (marker === 0xe1 && ascii(seg, 0, EXTENDED_XMP_NS.length) === EXTENDED_XMP_NS) {
+      const xmp = text(seg.subarray(EXTENDED_XMP_NS.length)); out.extendedXmp = xmp;
+      addRisk(out, "red", "xmp", "Extended XMP metadata", summarizeXml(xmp), "Extended XMP can carry hidden edit history, GPS fields or camera serials.");
+    } else if (marker === 0xed) {
+      const iptc = parseIptc(seg); out.iptc = iptc;
+      if (iptc.length) for (const item of iptc) addRisk(out, "red", "iptc", item.label, item.value, "IPTC caption/byline/copyright metadata can identify you.");
+      else addRisk(out, "red", "app", "JPEG APP13 metadata", `${seg.length} bytes`, "Photoshop/IPTC blocks can include private metadata.");
+    } else if (marker === 0xe2 && isValidIccProfile(seg)) {
+      out.hasIcc = true; addSafe(out, "Color profile", "ICC profile kept");
+    } else if (marker === 0xe2 && ascii(seg, 0, 4) === "MPF\0") {
+      addRisk(out, "red", "thumbnail", "MPF secondary image", `${seg.length} bytes`, "Multi-Picture metadata can reference or embed secondary images with GPS or serial data.");
+    } else if (marker === 0xec) {
+      addRisk(out, "red", "app", ascii(seg, 0, 6) === "Ducky\0" ? "APP12/Ducky metadata" : "JPEG APP12 metadata", previewBytes(seg), "Private JPEG APP12 data can reveal camera serials, owners or GPS.");
+    } else if (marker === 0xfe) {
+      addRisk(out, "red", "comment", "JPEG comment", cleanAscii(ascii(seg, 0, seg.length)), "Comments can reveal names, places or workflow notes.");
+    } else if (marker >= 0xe0 && marker <= 0xef) {
+      addRisk(out, "red", "app", `JPEG APP${marker - 0xe0} metadata`, previewBytes(seg), "Unknown APP segments may contain hidden photo metadata.");
+    } else if (isSof(marker) && seg.length >= 5) {
+      out.width = be16(seg, 3); out.height = be16(seg, 1);
+    }
+}
+
+function previewBytes(seg) {
+  const s = cleanAscii(ascii(seg, 0, Math.min(seg.length, 80))).replace(/[^\x20-\x7e]+/g, " ");
+  return s || `${seg.length} bytes`;
+}
+
+function findJpegEoi(bytes, p) {
+  for (let i = p; i + 1 < bytes.length; i++) {
+    if (bytes[i] !== 0xff) continue;
+    let j = i + 1;
+    while (bytes[j] === 0xff) j++;
+    const marker = bytes[j];
+    if (marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7)) { i = j; continue; }
+    if (marker === 0xd9) return j + 1;
+    i = j;
+  }
+  return -1;
+}
+
+function parseJfif(seg) {
+  if (seg.length < 14 || ascii(seg, 0, 5) !== "JFIF\0") return null;
+  const xThumb = seg[12], yThumb = seg[13];
+  return { xThumb, yThumb, thumbnailBytes: xThumb * yThumb * 3 };
+}
+
+function sanitizedJfif(seg) {
+  const jfif = parseJfif(seg);
+  if (!jfif) return null;
+  if (!jfif.thumbnailBytes) return seg;
+  const out = new Uint8Array(seg.subarray(0, 14));
+  out[12] = 0; out[13] = 0;
+  return out;
+}
+
+function isValidIccProfile(seg) {
+  return seg.length > 14 && ascii(seg, 0, 12) === "ICC_PROFILE\0" && seg[12] > 0 && seg[13] > 0 && seg[12] <= seg[13];
+}
+
+function isSof(marker) {
+  return ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf));
+}
+
+function isAllowedJpegSegment(marker) {
+  return marker === 0xdb || marker === 0xc4 || marker === 0xdd || isSof(marker);
+}
+
+function jpegSegment(marker, data) {
+  const out = new Uint8Array(4 + data.length);
+  out[0] = 0xff; out[1] = marker;
+  const len = data.length + 2;
+  out[2] = len >> 8; out[3] = len & 255;
+  out.set(data, 4);
+  return out;
 }
 
 function summarizeXml(x) {
@@ -68,46 +157,69 @@ export function parsePng(bytes, options = {}) {
     const len = be32(bytes, p); const type = ascii(bytes, p + 4, 4); const start = p + 8; const end = start + len;
     if (end + 4 > bytes.length) break;
     const data = bytes.subarray(start, end); out.chunks.push({ type, length: len });
-    if (type === "eXIf") { const t = parseTiff(data); mergeTiff(out, t); out.exif = t; }
-    if (type === "tEXt") {
-      const nul = data.indexOf(0); if (nul >= 0) addRisk(out, "red", "comment", `PNG text: ${ascii(data,0,nul)}`, text(data.subarray(nul+1)), "PNG text chunks can reveal authors and comments.");
-    }
-    if (type === "iTXt") {
-      const nul = data.indexOf(0); const key = nul >= 0 ? ascii(data, 0, nul) : "iTXt";
-      let off = nul + 1; const compressed = data[off++] === 1; off++; // method
-      const langEnd = data.indexOf(0, off); off = (langEnd < 0 ? off : langEnd + 1);
-      const trEnd = data.indexOf(0, off); off = (trEnd < 0 ? off : trEnd + 1);
-      addRisk(out, "red", "comment", `PNG iTXt: ${key}`, compressed ? "compressed international text" : text(data.subarray(off)), "International text metadata can reveal comments or authors.");
-    }
-    if (type === "zTXt") {
-      const nul = data.indexOf(0); const key = nul >= 0 ? ascii(data, 0, nul) : "zTXt";
-      let value = "compressed text present";
-      if (options.inflateSync && nul >= 0) value = text(options.inflateSync(data.subarray(nul + 2)));
-      addRisk(out, "red", "comment", `PNG zTXt: ${key}`, value, "Compressed text metadata can reveal comments or authors.");
-    }
+    classifyPngChunk(out, type, data, options);
     if (type === "iCCP") addSafe(out, "Color profile", "PNG iCCP profile");
-    if (type === "IEND") break;
+    if (type === "IEND") {
+      const after = end + 4;
+      if (after < bytes.length) {
+        out.afterIend = bytes.length - after;
+        addRisk(out, "red", "trailing", "PNG data after IEND", `${out.afterIend} bytes`, "Bytes after the terminal PNG chunk can hide text, files or tracking data.");
+        parsePngTrailingChunks(out, bytes, after, options);
+      }
+      break;
+    }
     p = end + 4;
   }
   return rank(out);
 }
 
+function classifyPngChunk(out, type, data, options, prefix = "PNG") {
+  if (type === "eXIf") { const t = parseTiff(data); mergeTiff(out, t); out.exif = t; }
+  if (type === "tEXt") {
+    const nul = data.indexOf(0); if (nul >= 0) addRisk(out, "red", "comment", `${prefix} text: ${ascii(data,0,nul)}`, text(data.subarray(nul+1)), "PNG text chunks can reveal authors and comments.");
+  }
+  if (type === "iTXt") {
+    const nul = data.indexOf(0); const key = nul >= 0 ? ascii(data, 0, nul) : "iTXt";
+    let off = nul + 1; const compressed = data[off++] === 1; off++; // method
+    const langEnd = data.indexOf(0, off); off = (langEnd < 0 ? off : langEnd + 1);
+    const trEnd = data.indexOf(0, off); off = (trEnd < 0 ? off : trEnd + 1);
+    addRisk(out, "red", "comment", `${prefix} iTXt: ${key}`, compressed ? "compressed international text" : text(data.subarray(off)), "International text metadata can reveal comments or authors.");
+  }
+  if (type === "zTXt") {
+    const nul = data.indexOf(0); const key = nul >= 0 ? ascii(data, 0, nul) : "zTXt";
+    let value = "compressed text present";
+    if (options.inflateSync && nul >= 0) value = text(options.inflateSync(data.subarray(nul + 2)));
+    addRisk(out, "red", "comment", `${prefix} zTXt: ${key}`, value, "Compressed text metadata can reveal comments or authors.");
+  }
+}
+
+function parsePngTrailingChunks(out, bytes, p, options) {
+  while (p + 12 <= bytes.length) {
+    const len = be32(bytes, p); const type = ascii(bytes, p + 4, 4); const start = p + 8; const end = start + len;
+    if (!/^[A-Za-z]{4}$/.test(type) || end + 4 > bytes.length) break;
+    classifyPngChunk(out, type, bytes.subarray(start, end), options, "PNG trailing");
+    p = end + 4;
+  }
+}
+
 export function parseWebp(bytes) {
   const out = { format: "webp", risks: [], safe: [], warnings: [], chunks: [] };
-  for (let p = 12; p + 8 <= bytes.length;) {
+  const riffEnd = Math.min(bytes.length, 8 + be32le(bytes, 4));
+  for (let p = 12; p + 8 <= riffEnd;) {
     const type = ascii(bytes, p, 4); const len = be32le(bytes, p + 4); const start = p + 8; const end = start + len;
-    if (end > bytes.length) break;
+    if (end > riffEnd) break;
     const data = bytes.subarray(start, end); out.chunks.push({ type, length: len });
     if (type === "EXIF") { const t = parseTiff(data); mergeTiff(out, t); out.exif = t; }
     if (type === "XMP ") addRisk(out, "red", "xmp", "WebP XMP metadata", summarizeXml(text(data)), "XMP can include edit history and identifying names.");
     if (type === "ICCP") addSafe(out, "Color profile", "WebP ICC profile");
     p = end + (len & 1);
   }
+  if (riffEnd < bytes.length) addRisk(out, "red", "trailing", "WebP data after RIFF", `${bytes.length - riffEnd} bytes`, "Bytes after the WebP container can hide appended private data.");
   return rank(out);
 }
 
 function rank(out) {
-  const order = { gps: 0, serial: 1, owner: 2, thumbnail: 3, datetime: 4, device: 5, software: 6, xmp: 7, comment: 8, iptc: 9 };
+  const order = { gps: 0, serial: 1, owner: 2, thumbnail: 3, trailing: 4, app: 5, datetime: 6, device: 7, software: 8, xmp: 9, comment: 10, iptc: 11 };
   out.risks.sort((a, b) => (order[a.kind] ?? 50) - (order[b.kind] ?? 50));
   if (out.orientation) addSafe(out, "Orientation", String(out.orientation));
   return out;
@@ -209,16 +321,29 @@ export function stripJpegMetadata(input, { keepIcc = true } = {}) {
   if (bytes[0] !== 0xff || bytes[1] !== 0xd8) throw new Error("not a JPEG");
   const chunks = [bytes.subarray(0, 2)]; let p = 2;
   while (p + 4 <= bytes.length) {
-    if (bytes[p] !== 0xff) { chunks.push(bytes.subarray(p)); break; }
+    if (bytes[p] !== 0xff) { p++; continue; }
     let mpos = p; while (bytes[mpos] === 0xff) mpos++;
     const marker = bytes[mpos];
-    if (marker === 0xda) { chunks.push(bytes.subarray(p)); break; }
-    if (marker === 0xd9) { chunks.push(bytes.subarray(p, mpos + 1)); p = mpos + 1; continue; }
+    if (marker === 0xda) {
+      const lenPos = mpos + 1; const len = be16(bytes, lenPos); const scanStart = lenPos + len;
+      if (len < 2 || scanStart > bytes.length) break;
+      const eoiEnd = findJpegEoi(bytes, scanStart);
+      chunks.push(bytes.subarray(p, eoiEnd >= 0 ? eoiEnd : bytes.length));
+      break;
+    }
+    if (marker === 0xd9) { chunks.push(bytes.subarray(p, mpos + 1)); break; }
     if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { chunks.push(bytes.subarray(p, mpos + 1)); p = mpos + 1; continue; }
     const lenPos = mpos + 1; const len = be16(bytes, lenPos); const end = lenPos + len;
     if (len < 2 || end > bytes.length) break;
-    const remove = marker === 0xe1 || marker === 0xed || marker === 0xfe || (!keepIcc && marker === 0xe2);
-    if (!remove) chunks.push(bytes.subarray(p, end));
+    const seg = bytes.subarray(lenPos + 2, end);
+    if (marker === 0xe0) {
+      const jfif = sanitizedJfif(seg);
+      if (jfif) chunks.push(jpegSegment(marker, jfif));
+    } else if (marker === 0xe2 && keepIcc && isValidIccProfile(seg)) {
+      chunks.push(bytes.subarray(p, end));
+    } else if (isAllowedJpegSegment(marker)) {
+      chunks.push(bytes.subarray(p, end));
+    }
     p = end;
   }
   const total = chunks.reduce((n, c) => n + c.length, 0); const out = new Uint8Array(total); let o = 0;

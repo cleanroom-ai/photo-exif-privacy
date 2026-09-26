@@ -49,6 +49,39 @@ test("lossless JPEG metadata strip removes APP1/APP13/COM but preserves scan byt
   assert.equal(parseMetadata(stripped).risks.some(r => ["gps","device","thumbnail"].includes(r.kind)), false);
 });
 
+test("strict JPEG report and lossless strip remove private APPs, JFIF thumbnails and trailing data", () => {
+  const secret = enc.encode("GPS=47.620500,-122.349300 SERIAL=SECRET-SERIAL");
+  const jfifThumb = new Uint8Array([...enc.encode("JFIF\0"), 1, 2, 0, 0, 1, 0, 1, 2, 1, 255, 0, 0, 0, 255, 0]);
+  const jpg = injectJpegSegments(minimalJpeg, [
+    { marker:0xe0, data:jfifThumb },
+    { marker:0xe2, data:new Uint8Array([...enc.encode("MPF\0MPF_SECONDARY_FULLSIZE_SECRET "), ...secret]) },
+    { marker:0xec, data:new Uint8Array([...enc.encode("Ducky\0"), ...secret]) },
+    { marker:0xeb, data:new Uint8Array([...enc.encode("PRIVATE_APP11 "), ...secret]) }
+  ]);
+  const trailed = new Uint8Array([...jpg, ...enc.encode("TRAILING_SECRET_GPS=47.620500"), ...minimalJpeg]);
+  const before = parseMetadata(trailed);
+  assert.ok(before.risks.some(r => r.label === "MPF secondary image"));
+  assert.ok(before.risks.some(r => r.label === "APP12/Ducky metadata"));
+  assert.ok(before.risks.some(r => r.label === "JFIF thumbnail"));
+  assert.ok(before.risks.some(r => r.label === "JPEG APP11 metadata"));
+  assert.ok(before.risks.some(r => r.label === "Trailing data after JPEG EOI"));
+  const stripped = stripJpegMetadata(trailed);
+  const asText = Buffer.from(stripped).toString("latin1");
+  assert.equal(asText.includes("MPF_SECONDARY"), false);
+  assert.equal(asText.includes("Ducky"), false);
+  assert.equal(asText.includes("PRIVATE_APP11"), false);
+  assert.equal(asText.includes("TRAILING_SECRET"), false);
+  const after = parseMetadata(stripped);
+  assert.equal(after.risks.length, 0, JSON.stringify(after.risks));
+});
+
+test("JPEG parser recognizes Extended XMP APP1 packets", () => {
+  const ns = enc.encode("http://ns.adobe.com/xmp/extension/\0");
+  const jpg = injectJpegSegments(minimalJpeg, [{ marker:0xe1, data:new Uint8Array([...ns, ...enc.encode("GPSLatitude=47.620500 CameraSerial=EXT-XMP-SERIAL")]) }]);
+  const m = parseMetadata(jpg);
+  assert.ok(m.risks.some(r => r.label === "Extended XMP metadata"));
+});
+
 test("PNG tEXt, iTXt, zTXt and eXIf chunks are parsed", () => {
   const sig = new Uint8Array([137,80,78,71,13,10,26,10]);
   const ihdr = makePngChunk("IHDR", new Uint8Array([0,0,0,1,0,0,0,1,8,6,0,0,0]));
@@ -65,6 +98,18 @@ test("PNG tEXt, iTXt, zTXt and eXIf chunks are parsed", () => {
   assert.ok(m.risks.some(r => r.label === "PNG text: Author"));
   assert.ok(m.risks.some(r => r.value === "secret note"));
   assert.ok(m.risks.some(r => r.kind === "gps"));
+});
+
+test("PNG parser warns on chunks and bytes after IEND", () => {
+  const sig = new Uint8Array([137,80,78,71,13,10,26,10]);
+  const ihdr = makePngChunk("IHDR", new Uint8Array([0,0,0,1,0,0,0,1,8,6,0,0,0]));
+  const iend = makePngChunk("IEND", new Uint8Array());
+  const trailingText = makePngChunk("tEXt", enc.encode("GPS\0 47.620500,-122.349300 SERIAL=PNG-SERIAL"));
+  const png = new Uint8Array([...sig, ...ihdr, ...iend, ...trailingText]);
+  const m = parseMetadata(png, { inflateSync });
+  assert.equal(m.afterIend, trailingText.length);
+  assert.ok(m.risks.some(r => r.label === "PNG data after IEND"));
+  assert.ok(m.risks.some(r => r.label === "PNG trailing text: GPS"));
 });
 
 test("WebP EXIF and XMP chunks are parsed", () => {

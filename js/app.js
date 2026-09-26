@@ -1,9 +1,9 @@
 import { CATEGORY_COLORS, renderRedacted, renderReview } from "../vendor/core/redact.js";
 import { prettyLabel, maskPreview } from "../vendor/core/rules.js";
 import { parseMetadata, stripJpegMetadata } from "./metadata.js";
+import { drawOrientedBitmap } from "./orientation.js";
 import { writeStoreZip } from "./zip.js";
 
-const MAX_SIDE = 4096;
 const $ = (s) => document.querySelector(s);
 const els = {
   drop: $("#drop"), file: $("#file"), workspace: $("#workspace"), list: $("#photos"), status: $("#status"), engine: $("#engine"),
@@ -12,6 +12,7 @@ const els = {
   download: $("#download"), zip: $("#zip"), verify: $("#verify"), selectAll: $("#select-all"), selectNone: $("#select-none"), reset: $("#reset")
 };
 const state = { photos: [], current: -1, style:"blur", scanId:0, busy:false };
+let thumbUrl = null;
 
 let worker;
 const pending = new Map(); const downloads = new Map();
@@ -49,7 +50,8 @@ els.selectAll.addEventListener("click", () => { const p=current(); if (p) { p.se
 els.selectNone.addEventListener("click", () => { const p=current(); if (p) { p.selected = new Set(); render(); } });
 els.download.addEventListener("click", async () => { const p = current(); if (!p) return; const f = await exportPhoto(p); saveBytes(f.data, f.name, f.type); renderVerify(p); });
 els.zip.addEventListener("click", async () => { const files=[]; for (const p of state.photos) files.push(await exportPhoto(p)); const zip = writeStoreZip(files.map(f=>({ name:f.name, data:f.data }))); saveBytes(zip, "photo-share-safe-clean.zip", "application/zip"); setStatus(`ZIP ready with ${files.length} clean photo${files.length===1?"":"s"}.`, "ok"); });
-els.reset.addEventListener("click", () => { state.photos = []; state.current = -1; els.file.value = ""; els.workspace.hidden = true; els.drop.hidden = false; setStatus(""); });
+els.reset.addEventListener("click", () => { clearThumbnail(); state.photos = []; state.current = -1; els.file.value = ""; els.workspace.hidden = true; els.drop.hidden = false; setStatus(""); });
+window.addEventListener("beforeunload", clearThumbnail);
 const drag = { start:null, box:null };
 els.review.addEventListener("pointerdown", (e) => { const p=current(); if (!p) return; els.review.setPointerCapture(e.pointerId); drag.start = toImage(e); });
 els.review.addEventListener("pointermove", (e) => { const p=current(); if (!drag.start || !p) return; const q = toImage(e); drag.box = { x0:Math.min(q.x,drag.start.x), y0:Math.min(q.y,drag.start.y), x1:Math.max(q.x,drag.start.x), y1:Math.max(q.y,drag.start.y) }; renderReview(els.review, p.canvas, p.detections, p.selected, drag.box); });
@@ -64,10 +66,17 @@ async function loadOne(file) {
   if (/^(exif-street|png-note|clean-control)/i.test(file.name || "")) {
     canvas = drawFakeStreetCanvas();
   } else {
-    let bmp;
-    try { bmp = await createImageBitmap(new Blob([bytes], { type:file.type || mimeForName(file.name) })); }
-    catch { state.photos.push({ name:file.name, bytes, meta, error:"This browser cannot decode that image (HEIC support varies by browser). Metadata was parsed when possible." }); return; }
-    canvas = orientedCanvas(bmp, meta.orientation || 1); bmp.close?.();
+    let bmp, orientation = meta.orientation || 1;
+    const blob = new Blob([bytes], { type:file.type || mimeForName(file.name) });
+    try {
+      bmp = await createImageBitmap(blob, { imageOrientation:"none" });
+      if (orientation !== 1 && await bitmapOrientationAlreadyApplied(blob, bmp)) orientation = 1;
+    }
+    catch {
+      try { bmp = await createImageBitmap(blob); if (bitmapAlreadyOriented(bmp, meta, orientation)) orientation = 1; }
+      catch { state.photos.push({ name:file.name, bytes, meta, error:"This browser cannot decode that image (HEIC support varies by browser). Metadata was parsed when possible." }); return; }
+    }
+    canvas = orientedCanvas(bmp, orientation, alphaCapable(file)); bmp.close?.();
   }
   const photo = { name:file.name || "photo", type:file.type || mimeForName(file.name), bytes, meta, canvas, detections:[], selected:new Set(), verified:null };
   state.photos.push(photo); if (els.visual.checked) await runScan(photo); }
@@ -103,21 +112,46 @@ function drawFakeStreetCanvas() {
 }
 function roundRect(ctx,x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 
-function orientedCanvas(bmp, orientation) { const swap = orientation >=5 && orientation <=8; const scale = Math.min(1, MAX_SIDE / Math.max(bmp.width, bmp.height)); const w=Math.round(bmp.width*scale), h=Math.round(bmp.height*scale); const c=document.createElement("canvas"); c.width=swap?h:w; c.height=swap?w:h; const x=c.getContext("2d"); x.fillStyle="#fff"; x.fillRect(0,0,c.width,c.height); if (orientation===3) { x.translate(c.width,c.height); x.rotate(Math.PI); } else if (orientation===6) { x.translate(c.width,0); x.rotate(Math.PI/2); } else if (orientation===8) { x.translate(0,c.height); x.rotate(-Math.PI/2); } x.drawImage(bmp,0,0,w,h); return c; }
+function orientedCanvas(bmp, orientation, preserveAlpha = false) { return drawOrientedBitmap(document, bmp, orientation, { fill:preserveAlpha ? "transparent" : "#fff" }); }
+function bitmapAlreadyOriented(bmp, meta, orientation) { return orientation >= 5 && orientation <= 8 && meta.width && meta.height && bmp.width === meta.height && bmp.height === meta.width; }
+async function bitmapOrientationAlreadyApplied(blob, bmpNone) {
+  let bmpFrom = null;
+  try {
+    bmpFrom = await createImageBitmap(blob, { imageOrientation:"from-image" });
+    return bitmapsEquivalent(bmpNone, bmpFrom);
+  } catch {
+    return false;
+  } finally {
+    bmpFrom?.close?.();
+  }
+}
+function bitmapsEquivalent(a, b) {
+  if (a.width !== b.width || a.height !== b.height) return false;
+  const w = Math.min(16, a.width), h = Math.min(16, a.height);
+  const ca = document.createElement("canvas"), cb = document.createElement("canvas");
+  ca.width = cb.width = w; ca.height = cb.height = h;
+  const xa = ca.getContext("2d", { willReadFrequently:true }), xb = cb.getContext("2d", { willReadFrequently:true });
+  xa.drawImage(a, 0, 0, w, h); xb.drawImage(b, 0, 0, w, h);
+  const da = xa.getImageData(0, 0, w, h).data, db = xb.getImageData(0, 0, w, h).data;
+  for (let i = 0; i < da.length; i++) if (Math.abs(da[i] - db[i]) > 2) return false;
+  return true;
+}
 function current() { return state.photos[state.current]; }
 function selectPhoto(i) { state.current = i; render(); }
 function renderPhotoList() { els.list.replaceChildren(...state.photos.map((p,i) => { const b=document.createElement("button"); b.type="button"; b.textContent=`${i+1}. ${p.name}`; b.className=i===state.current?"on":""; b.addEventListener("click",()=>selectPhoto(i)); return b; })); }
 function render() { renderPhotoList(); const p=current(); if (!p) return; renderReport(p); if (p.canvas) { renderRedacted(els.clean, p.canvas, p.detections, p.selected, state.style); renderReview(els.review, p.canvas, p.detections, p.selected, drag.box); } renderDetections(p); els.lossless.disabled = !(isJpeg(p) && p.selected.size === 0 && (p.meta.orientation || 1) === 1); }
-function renderReport(p) { els.report.replaceChildren(...p.meta.risks.map((r) => { const li=document.createElement("li"); li.className=`risk ${r.kind}`; li.innerHTML=`<strong>🔴 ${escapeHtml(r.label)}</strong><span>${escapeHtml(r.value || "present")}</span><small>${escapeHtml(r.detail || "")}</small>`; return li; })); if (!p.meta.risks.length) els.report.innerHTML='<li class="ok">🟢 No hidden photo metadata found.</li>'; els.safe.replaceChildren(...(p.meta.safe || []).map(s=>{ const li=document.createElement("li"); li.textContent=`🟢 Safe to keep: ${s.label}${s.value ? " — " + s.value : ""}`; return li; })); els.thumb.innerHTML=""; if (p.meta.thumbnail) { const img=new Image(); img.alt="Embedded EXIF thumbnail"; img.src=URL.createObjectURL(new Blob([p.meta.thumbnail], { type:"image/jpeg" })); els.thumb.append(Object.assign(document.createElement("p"), { textContent:"Embedded thumbnail preview (may show uncropped content):" }), img); } if (p.error) setStatus(p.error, "warn"); }
+function renderReport(p) { els.report.replaceChildren(...p.meta.risks.map((r) => { const li=document.createElement("li"); li.className=`risk ${r.kind}`; li.innerHTML=`<strong>🔴 ${escapeHtml(r.label)}</strong><span>${escapeHtml(r.value || "present")}</span><small>${escapeHtml(r.detail || "")}</small>`; return li; })); if (!p.meta.risks.length) els.report.innerHTML='<li class="ok">🟢 No hidden photo metadata found.</li>'; els.safe.replaceChildren(...(p.meta.safe || []).map(s=>{ const li=document.createElement("li"); li.textContent=`🟢 Safe to keep: ${s.label}${s.value ? " — " + s.value : ""}`; return li; })); clearThumbnail(); if (p.meta.thumbnail) { const img=new Image(); img.alt="Embedded EXIF thumbnail"; thumbUrl=URL.createObjectURL(new Blob([p.meta.thumbnail], { type:"image/jpeg" })); img.src=thumbUrl; els.thumb.append(Object.assign(document.createElement("p"), { textContent:"Embedded thumbnail preview (may show uncropped content):" }), img); } if (p.error) setStatus(p.error, "warn"); }
 function renderDetections(p) { els.detections.replaceChildren(...p.detections.map(d=>{ const li=document.createElement("li"); const label=document.createElement("label"); const cb=Object.assign(document.createElement("input"), { type:"checkbox", checked:p.selected.has(d.id) }); cb.addEventListener("change",()=>{ cb.checked?p.selected.add(d.id):p.selected.delete(d.id); render(); }); const dot=Object.assign(document.createElement("span"), { className:"dot" }); dot.style.background=CATEGORY_COLORS[d.category] || "#64748b"; const name=Object.assign(document.createElement("span"), { className:"name", textContent:`#${d.id} ${d.source === "you" ? "Your box" : prettyLabel(d.label)}` }); const prev=Object.assign(document.createElement("span"), { className:"preview", textContent:maskPreview(d.text) }); label.append(cb,dot,name,prev); li.append(label); return li; })); els.emptyDetections.hidden = p.detections.length > 0; }
 async function exportPhoto(p) { if (isJpeg(p) && els.lossless.checked && p.selected.size === 0 && (p.meta.orientation || 1) === 1) { const data=stripJpegMetadata(p.bytes); p.verified=parseMetadata(data); return { name:baseName(p.name)+"-clean.jpg", type:"image/jpeg", data }; } const type = p.type.includes("png") ? "image/png" : p.type.includes("webp") ? "image/webp" : "image/jpeg"; const c=document.createElement("canvas"); renderRedacted(c, p.canvas, p.detections, p.selected, state.style); const blob=await new Promise(res=>c.toBlob(res, type, type==="image/jpeg" ? .95 : undefined)); const data=new Uint8Array(await blob.arrayBuffer()); p.verified=parseMetadata(data); return { name:baseName(p.name)+"-clean"+(type.includes("png")?".png":type.includes("webp")?".webp":".jpg"), type, data }; }
-function renderVerify(p) { const bad = p.verified.risks.filter(r=>["gps","device","serial","thumbnail","xmp"].includes(r.kind)); els.verify.textContent = bad.length ? `⚠ Re-parse found ${bad.length} metadata item(s).` : "✓ Verified: no GPS, no camera info, no thumbnail"; els.verify.dataset.kind = bad.length ? "warn" : "ok"; }
+function renderVerify(p) { const bad = [...(p.verified.risks || []), ...(p.verified.warnings || [])]; els.verify.textContent = bad.length ? `⚠ Re-parse found ${bad.length} metadata item(s).` : "✓ Verified: no GPS, no camera info, no thumbnail"; els.verify.dataset.kind = bad.length ? "warn" : "ok"; }
 function toImage(e) { const r=els.review.getBoundingClientRect(); return { x:(e.clientX-r.left)/r.width*els.review.width, y:(e.clientY-r.top)/r.height*els.review.height }; }
 function nextId(p) { return p.detections.reduce((m,d)=>Math.max(m,d.id),0)+1; }
 function saveBytes(data, name, type) { const url=URL.createObjectURL(new Blob([data], { type })); const a=Object.assign(document.createElement("a"), { href:url, download:name }); a.click(); setTimeout(()=>URL.revokeObjectURL(url), 5000); }
 function isJpeg(p) { return p.type.includes("jpeg") || /\.jpe?g$/i.test(p.name) || (p.bytes?.[0]===0xff && p.bytes?.[1]===0xd8); }
 const mimeForName = (n) => /\.png$/i.test(n)?"image/png":/\.webp$/i.test(n)?"image/webp":"image/jpeg";
+const alphaCapable = (f) => /(?:png|webp)/i.test(f.type || "") || /\.(?:png|webp)$/i.test(f.name || "");
 const baseName = (n) => (n || "photo").replace(/\.[^.]+$/, "").replace(/[^a-z0-9._-]+/gi, "-");
 const escapeHtml = (s) => String(s ?? "").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+function clearThumbnail() { if (thumbUrl) URL.revokeObjectURL(thumbUrl); thumbUrl = null; els.thumb.replaceChildren(); }
 function setStatus(t,k="") { els.status.textContent=t; els.status.dataset.kind=k; }
 function setEngine(t,k="") { els.engine.textContent=t; els.engine.dataset.kind=k; }

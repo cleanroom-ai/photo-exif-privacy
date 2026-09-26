@@ -5,6 +5,8 @@ import { classifyOcrLine, detectionsFromOcrLines } from "../js/heuristics.js";
 test("plate and house-number heuristics flag positives", () => {
   assert.equal(classifyOcrLine("7ABC123").label, "POSSIBLE_PLATE");
   assert.equal(classifyOcrLine("AB-1234").label, "POSSIBLE_PLATE");
+  assert.equal(classifyOcrLine("PRIVACY").label, "POSSIBLE_PLATE");
+  assert.equal(classifyOcrLine("ABCDEF", { x0:0, y0:0, x1:180, y1:40 }).label, "POSSIBLE_PLATE");
   assert.equal(classifyOcrLine("742").label, "HOUSE_NUMBER");
   assert.equal(classifyOcrLine("12").label, "HOUSE_NUMBER");
 });
@@ -12,6 +14,7 @@ test("plate and house-number heuristics flag positives", () => {
 test("plate heuristics avoid common negatives", () => {
   assert.equal(classifyOcrLine("PINE ST"), null);
   assert.equal(classifyOcrLine("HELLO"), null);
+  assert.equal(classifyOcrLine("ABCDEF", { x0:0, y0:0, x1:40, y1:40 }), null);
   assert.equal(classifyOcrLine("IMG12345"), null);
   assert.equal(classifyOcrLine("2026-09-25")?.label, undefined);
 });
