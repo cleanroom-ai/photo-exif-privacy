@@ -1,9 +1,10 @@
 ---
 title: Photo Share-Safe
-emoji: 🧼
-colorFrom: gray
-colorTo: indigo
+emoji: 📷
+colorFrom: yellow
+colorTo: gray
 sdk: static
+pinned: true
 app_file: index.html
 license: apache-2.0
 short_description: Strip photo GPS/EXIF, blur faces & plates, in-browser
