@@ -10,7 +10,7 @@
     "serve": "node node_modules/@cleanroom-ai/core/scripts/serve.mjs ."
   },
   "dependencies": {
-    "@cleanroom-ai/core": "github:cleanroom-ai/cleanroom-core#v0.1.5"
+    "@cleanroom-ai/core": "github:cleanroom-ai/cleanroom-core#v0.1.6"
   },
   "devDependencies": {
     "@huggingface/transformers": "4.3.0",
