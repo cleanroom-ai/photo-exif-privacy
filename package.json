@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=26"
+  },
   "scripts": {
     "vendor": "node scripts/vendor.mjs",
     "examples": "node scripts/make-examples.mjs",

@@ -25,7 +25,7 @@ jobs:
       - uses: actions/setup-node@v7
         if: steps.token.outputs.ok == 'true'
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
       - name: Build (vendor runtime libraries)
         if: steps.token.outputs.ok == 'true'
@@ -35,7 +35,7 @@ jobs:
       - uses: actions/setup-python@v7
         if: steps.token.outputs.ok == 'true'
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Upload to cleanroom-ai/photo-exif-privacy
         if: steps.token.outputs.ok == 'true'
         env:

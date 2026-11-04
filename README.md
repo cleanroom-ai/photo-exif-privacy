@@ -64,6 +64,8 @@ No CDN, analytics, external fonts, map, or geocoding service is used. A strict C
 
 ## Run locally
 
+Requires Node.js 26 (Active LTS; see `.nvmrc`).
+
 ```bash
 npm ci
 npm run vendor
